@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VOID SURVIVOR - 2D 로그라이크 슈팅</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game" width="960" height="640"></canvas>
+
+    <div id="hud">
+      <div id="hp-bar-wrap">
+        <div id="hp-bar"></div>
+        <div id="hp-text">100 / 100</div>
+      </div>
+      <div id="xp-bar-wrap">
+        <div id="xp-bar"></div>
+      </div>
+      <div id="top-right">
+        <div id="level">LV 1</div>
+        <div id="timer">00:00</div>
+        <div id="kills">킬: 0</div>
+      </div>
+    </div>
+
+    <div id="start-screen" class="overlay">
+      <h1>VOID SURVIVOR</h1>
+      <p class="sub">2D 로그라이크 서바이벌 슈팅</p>
+      <div class="info">
+        <p><b>WASD / 방향키</b> 이동 · 무기는 자동 발사</p>
+        <p>적을 처치해 경험치를 얻고 레벨업하여 무기를 강화하세요</p>
+        <p>최대한 오래 생존하세요!</p>
+      </div>
+      <button id="start-btn">게임 시작</button>
+    </div>
+
+    <div id="levelup-screen" class="overlay hidden">
+      <h2>레벨 업!</h2>
+      <p class="sub">강화를 선택하세요</p>
+      <div id="upgrade-options"></div>
+    </div>
+
+    <div id="gameover-screen" class="overlay hidden">
+      <h2>게임 오버</h2>
+      <p id="final-stats"></p>
+      <button id="restart-btn">다시 시작</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

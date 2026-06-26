@@ -1,0 +1,180 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #0a0a12;
+  color: #e8e8f0;
+  font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+#game-container {
+  position: relative;
+  width: 960px;
+  height: 640px;
+  box-shadow: 0 0 40px rgba(120, 80, 255, 0.25);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+#game {
+  background: #11111c;
+  display: block;
+  cursor: crosshair;
+}
+
+#hud {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  padding: 14px 18px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#hp-bar-wrap, #xp-bar-wrap {
+  width: 320px;
+  height: 16px;
+  background: rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+#xp-bar-wrap { height: 8px; width: 320px; }
+
+#hp-bar {
+  height: 100%;
+  width: 100%;
+  background: linear-gradient(90deg, #ff3b5c, #ff7b54);
+  transition: width 0.15s ease;
+}
+
+#xp-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4dd0ff, #7b5cff);
+  transition: width 0.15s ease;
+}
+
+#hp-text {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  text-align: center;
+  font-size: 11px;
+  line-height: 16px;
+  text-shadow: 0 1px 2px #000;
+}
+
+#top-right {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  text-align: right;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-shadow: 0 1px 3px #000;
+}
+
+#level { font-weight: 700; color: #ffd166; }
+
+.overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(8, 8, 16, 0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
+  padding: 20px;
+}
+
+.overlay.hidden { display: none; }
+
+.overlay h1 {
+  font-size: 48px;
+  margin: 0;
+  letter-spacing: 4px;
+  color: #7b5cff;
+  text-shadow: 0 0 20px rgba(123, 92, 255, 0.7);
+}
+
+.overlay h2 {
+  font-size: 36px;
+  margin: 0;
+  color: #ff7b54;
+}
+
+.overlay .sub {
+  color: #aaa;
+  margin: 0 0 8px 0;
+}
+
+.overlay .info {
+  background: rgba(255,255,255,0.05);
+  border-radius: 8px;
+  padding: 14px 20px;
+  font-size: 14px;
+  color: #ccc;
+  line-height: 1.7;
+}
+
+button {
+  background: linear-gradient(135deg, #7b5cff, #4dd0ff);
+  color: #fff;
+  border: none;
+  padding: 12px 32px;
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 24px;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.2s ease;
+  box-shadow: 0 4px 16px rgba(123, 92, 255, 0.4);
+}
+
+button:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 6px 22px rgba(123, 92, 255, 0.6);
+}
+
+#upgrade-options {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 720px;
+}
+
+.upgrade-card {
+  background: rgba(255,255,255,0.06);
+  border: 2px solid rgba(123, 92, 255, 0.4);
+  border-radius: 12px;
+  padding: 18px;
+  width: 200px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.upgrade-card:hover {
+  background: rgba(123, 92, 255, 0.18);
+  border-color: #7b5cff;
+  transform: translateY(-3px);
+}
+
+.upgrade-card .icon { font-size: 28px; }
+.upgrade-card .name { font-weight: 700; margin: 8px 0 4px; color: #ffd166; }
+.upgrade-card .desc { font-size: 12.5px; color: #bbb; line-height: 1.4; }
+
+#final-stats { color: #ccc; font-size: 15px; line-height: 1.6; }
