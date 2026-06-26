@@ -40,9 +40,12 @@ let lastTime = 0;
 let camera = { x: 0, y: 0 };
 
 let player = null;
-let enemies = [], projectiles = [], enemyProjectiles = [], orbs = [], particles = [];
+let enemies = [], projectiles = [], enemyProjectiles = [], orbs = [], particles = [], hearts = [];
 let spawnTimer = 0;
 let spawnInterval = 1.6;
+let nextBossTime = 60;
+let bossesSpawned = 0;
+let bossBannerTimeout = null;
 
 // ---------- Weapon Definitions ----------
 const WEAPON_DEFS = {
@@ -61,6 +64,11 @@ const WEAPON_DEFS = {
     desc: lvl => `주기적으로 주변에 피해를 입힘 (LV ${lvl})`,
     maxLevel: 8,
   },
+  chain: {
+    name: '체인 라이트닝', icon: '⚡',
+    desc: lvl => `가장 가까운 적을 시작으로 번개가 연쇄적으로 튕김 (LV ${lvl})`,
+    maxLevel: 8,
+  },
 };
 
 const PASSIVE_DEFS = {
@@ -70,6 +78,8 @@ const PASSIVE_DEFS = {
   cooldown: { name: '연속 사격', icon: '⏱️', desc: '모든 무기 쿨다운 -8%' },
   pickup: { name: '자석', icon: '🧲', desc: '경험치 획득 범위 +30%' },
   regen: { name: '재생', icon: '✨', desc: '초당 체력 회복 +0.4' },
+  lifesteal: { name: '흡혈', icon: '🩸', desc: '가한 피해의 5%만큼 체력 회복' },
+  armor: { name: '방어', icon: '🛡️', desc: '받는 피해 -2 (최소 1)' },
 };
 
 function createPlayer() {
@@ -83,10 +93,12 @@ function createPlayer() {
     damageMult: 1,
     cooldownMult: 1,
     regen: 0,
+    lifesteal: 0,
+    armor: 0,
     invuln: 0,
     weapons: { blaster: 1 },
     passives: {},
-    weaponCooldowns: { blaster: 0, orbit: 0, aura: 0 },
+    weaponCooldowns: { blaster: 0, orbit: 0, aura: 0, chain: 0 },
     orbitAngle: 0,
     facing: { x: 1, y: 0 },
   };
@@ -99,10 +111,15 @@ function resetGame() {
   enemyProjectiles = [];
   orbs = [];
   particles = [];
+  hearts = [];
+  lightningBolts = [];
   elapsed = 0;
   kills = 0;
   spawnTimer = 0;
   spawnInterval = 1.6;
+  nextBossTime = 60;
+  bossesSpawned = 0;
+  hideBossBanner();
   camera.x = player.x - W / 2;
   camera.y = player.y - H / 2;
 }
@@ -121,7 +138,7 @@ function spawnEnemy(t) {
   const radius = Math.max(W, H) / 1.4 + rand(40, 140);
   const x = clamp(player.x + Math.cos(angle) * radius, def.r, WORLD_SIZE - def.r);
   const y = clamp(player.y + Math.sin(angle) * radius, def.r, WORLD_SIZE - def.r);
-  const timeScale = 1 + elapsed / 90;
+  const timeScale = 1 + elapsed / 110;
   enemies.push({
     type: t, x, y, r: def.r,
     hp: def.hp * timeScale, maxHp: def.hp * timeScale,
@@ -129,6 +146,37 @@ function spawnEnemy(t) {
     melee: def.melee, range: def.range, fireCd: def.fireCd, fireTimer: rand(0, 1),
     hitFlash: 0, contactCd: 0,
   });
+}
+
+function spawnBoss() {
+  bossesSpawned++;
+  const scale = 1 + (bossesSpawned - 1) * 0.6;
+  const angle = rand(0, Math.PI * 2);
+  const radius = Math.max(W, H) / 1.4 + rand(60, 140);
+  const r = 32;
+  const x = clamp(player.x + Math.cos(angle) * radius, r, WORLD_SIZE - r);
+  const y = clamp(player.y + Math.sin(angle) * radius, r, WORLD_SIZE - r);
+  enemies.push({
+    type: 'boss', x, y, r,
+    hp: 260 * scale, maxHp: 260 * scale,
+    speed: 46, dmg: 22 + bossesSpawned * 2, color: '#ff3b5c', xp: 35,
+    melee: true, hitFlash: 0, contactCd: 0, isBoss: true,
+  });
+  showBossBanner();
+}
+
+function showBossBanner() {
+  const el = document.getElementById('boss-banner');
+  if (!el) return;
+  el.classList.remove('hidden');
+  if (bossBannerTimeout) clearTimeout(bossBannerTimeout);
+  bossBannerTimeout = setTimeout(() => el.classList.add('hidden'), 2600);
+}
+
+function hideBossBanner() {
+  const el = document.getElementById('boss-banner');
+  if (bossBannerTimeout) { clearTimeout(bossBannerTimeout); bossBannerTimeout = null; }
+  if (el) el.classList.add('hidden');
 }
 
 function pickEnemyType() {
@@ -163,6 +211,11 @@ function spawnParticles(x, y, color, count = 6) {
 // ---------- XP Orbs ----------
 function spawnOrb(x, y, value) {
   orbs.push({ x, y, value, r: 5 + Math.min(4, value / 4) });
+}
+
+// ---------- Heart Pickups ----------
+function spawnHeart(x, y, amount) {
+  hearts.push({ x, y, amount, r: 8 });
 }
 
 // ---------- Update ----------
@@ -256,6 +309,36 @@ function updateAura(dt, lvl) {
 
 let orbitDraws = [];
 let auraPulses = [];
+let lightningBolts = [];
+
+function fireChain(lvl) {
+  let current = findNearestEnemy(player.x, player.y, 300);
+  if (!current) return;
+  const dmg = (10 + lvl * 4) * player.damageMult;
+  const maxJumps = 2 + Math.floor(lvl / 2);
+  const hit = new Set();
+  let prevX = player.x, prevY = player.y;
+  for (let i = 0; i < maxJumps && current; i++) {
+    damageEnemy(current, dmg);
+    hit.add(current);
+    lightningBolts.push({ x1: prevX, y1: prevY, x2: current.x, y2: current.y, life: 0.15, maxLife: 0.15 });
+    prevX = current.x; prevY = current.y;
+    let next = null, bestD = 170 * 170;
+    for (const e of enemies) {
+      if (hit.has(e) || e.dead) continue;
+      const d = dist2(current.x, current.y, e.x, e.y);
+      if (d < bestD) { bestD = d; next = e; }
+    }
+    current = next;
+  }
+}
+
+function updateLightning(dt) {
+  for (let i = lightningBolts.length - 1; i >= 0; i--) {
+    lightningBolts[i].life -= dt;
+    if (lightningBolts[i].life <= 0) lightningBolts.splice(i, 1);
+  }
+}
 
 function updateWeapons(dt) {
   orbitDraws = [];
@@ -271,6 +354,13 @@ function updateWeapons(dt) {
       updateOrbit(dt, lvl);
     } else if (w === 'aura') {
       updateAura(dt, lvl);
+    } else if (w === 'chain') {
+      player.weaponCooldowns.chain -= dt;
+      const cd = Math.max(0.4, 1.3 - lvl * 0.08) * player.cooldownMult;
+      if (player.weaponCooldowns.chain <= 0) {
+        player.weaponCooldowns.chain = cd;
+        fireChain(lvl);
+      }
     }
   }
   for (let i = auraPulses.length - 1; i >= 0; i--) {
@@ -279,16 +369,25 @@ function updateWeapons(dt) {
     p.r = lerp(p.r, p.maxR, 0.3);
     if (p.life <= 0) auraPulses.splice(i, 1);
   }
+  updateLightning(dt);
 }
 
 function damageEnemy(e, dmg) {
   e.hp -= dmg;
   e.hitFlash = 0.12;
+  if (player.lifesteal > 0) {
+    player.hp = Math.min(player.maxHp, player.hp + dmg * player.lifesteal);
+  }
   if (e.hp <= 0 && !e.dead) {
     e.dead = true;
     kills++;
     spawnParticles(e.x, e.y, e.color, 8);
     spawnOrb(e.x, e.y, e.xp);
+    if (e.isBoss) {
+      spawnHeart(e.x, e.y, 40);
+    } else if (Math.random() < 0.1) {
+      spawnHeart(e.x, e.y, 15);
+    }
   }
 }
 
@@ -327,6 +426,7 @@ function updateProjectiles(dt) {
 
 function damagePlayer(dmg) {
   if (player.invuln > 0) return;
+  dmg = Math.max(1, dmg - player.armor);
   player.hp -= dmg;
   player.invuln = 0.5;
   spawnParticles(player.x, player.y, '#ff5c7a', 5);
@@ -396,12 +496,30 @@ function updateOrbs(dt) {
   }
 }
 
+function updateHearts(dt) {
+  for (let i = hearts.length - 1; i >= 0; i--) {
+    const h = hearts[i];
+    const d = dist(h.x, h.y, player.x, player.y);
+    if (d < player.pickupRadius) {
+      const speed = 320;
+      const dx = (player.x - h.x) / Math.max(d, 1), dy = (player.y - h.y) / Math.max(d, 1);
+      h.x += dx * speed * dt;
+      h.y += dy * speed * dt;
+    }
+    if (d < player.r + h.r + 4) {
+      player.hp = Math.min(player.maxHp, player.hp + h.amount);
+      spawnParticles(player.x, player.y, '#5cff7b', 6);
+      hearts.splice(i, 1);
+    }
+  }
+}
+
 function gainXp(v) {
   player.xp += v;
   while (player.xp >= player.xpToNext) {
     player.xp -= player.xpToNext;
     player.level++;
-    player.xpToNext = Math.floor(player.xpToNext * 1.28 + 4);
+    player.xpToNext = Math.floor(player.xpToNext * 1.3 + 4);
     triggerLevelUp();
   }
 }
@@ -421,8 +539,12 @@ function updateSpawning(dt) {
   spawnInterval = Math.max(0.35, 1.6 - elapsed / 60);
   if (spawnTimer <= 0) {
     spawnTimer = spawnInterval;
-    const batch = 1 + Math.floor(elapsed / 40);
+    const batch = Math.min(6, 1 + Math.floor(elapsed / 40));
     for (let i = 0; i < batch; i++) spawnEnemy(pickEnemyType());
+  }
+  if (elapsed >= nextBossTime) {
+    nextBossTime += 75;
+    spawnBoss();
   }
 }
 
@@ -453,6 +575,8 @@ function applyUpgrade(choice) {
     if (k === 'cooldown') player.cooldownMult *= 0.92;
     if (k === 'pickup') player.pickupRadius *= 1.3;
     if (k === 'regen') player.regen += 0.4;
+    if (k === 'lifesteal') player.lifesteal += 0.05;
+    if (k === 'armor') player.armor += 2;
   }
 }
 
@@ -555,11 +679,20 @@ function drawPlayer() {
 function drawEnemies() {
   for (const e of enemies) {
     const sx = e.x - camera.x, sy = e.y - camera.y;
-    if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+    if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
+    if (e.isBoss) {
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,59,92,0.5)';
+      ctx.lineWidth = 4;
+      ctx.arc(sx, sy, e.r + 6, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     ctx.beginPath();
     ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : e.color;
+    if (e.isBoss) { ctx.shadowColor = '#ff3b5c'; ctx.shadowBlur = 16; }
     ctx.arc(sx, sy, e.r, 0, Math.PI * 2);
     ctx.fill();
+    ctx.shadowBlur = 0;
     // hp bar
     if (e.hp < e.maxHp) {
       const w = e.r * 2;
@@ -567,6 +700,12 @@ function drawEnemies() {
       ctx.fillRect(sx - w / 2, sy - e.r - 8, w, 4);
       ctx.fillStyle = '#ff5c7a';
       ctx.fillRect(sx - w / 2, sy - e.r - 8, w * (e.hp / e.maxHp), 4);
+    }
+    if (e.isBoss) {
+      ctx.fillStyle = '#ffd166';
+      ctx.font = '11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('BOSS', sx, sy - e.r - 14);
     }
   }
 }
@@ -596,6 +735,34 @@ function drawOrbs() {
     ctx.arc(sx, sy, o.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
+  }
+}
+
+function drawHearts() {
+  for (const h of hearts) {
+    const sx = h.x - camera.x, sy = h.y - camera.y;
+    ctx.beginPath();
+    ctx.fillStyle = '#5cff7b';
+    ctx.shadowColor = '#5cff7b';
+    ctx.shadowBlur = 8;
+    ctx.arc(sx, sy, h.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#0a0a12';
+    ctx.font = 'bold 10px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('+', sx, sy + 3);
+  }
+}
+
+function drawLightning() {
+  for (const b of lightningBolts) {
+    ctx.beginPath();
+    ctx.strokeStyle = `rgba(120,220,255,${Math.max(0, b.life / b.maxLife)})`;
+    ctx.lineWidth = 2.5;
+    ctx.moveTo(b.x1 - camera.x, b.y1 - camera.y);
+    ctx.lineTo(b.x2 - camera.x, b.y2 - camera.y);
+    ctx.stroke();
   }
 }
 
@@ -629,6 +796,7 @@ function update(dt) {
   updateProjectiles(dt);
   updateEnemies(dt);
   updateOrbs(dt);
+  updateHearts(dt);
   updateParticles(dt);
   updateSpawning(dt);
   updateHud();
@@ -638,7 +806,9 @@ function render() {
   if (!player) return;
   drawBackground();
   drawOrbs();
+  drawHearts();
   drawEnemies();
+  drawLightning();
   drawProjectiles();
   drawPlayer();
   drawParticles();
