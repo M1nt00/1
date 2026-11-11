@@ -63,11 +63,9 @@ function barbTurn(pid) {
     const mine = G.units.filter(u => u.owner === pid && u.home === camp.pos).length;
     const cap = 1 + (G.turn > 30 ? 1 : 0) + (G.turn > 70 && !easy ? 1 : 0);
     if (mine >= cap) continue;
-    let type = 'warrior';
-    const r = rnd();
-    if (G.turn > 90) type = r < 0.5 ? 'swordsman' : r < 0.8 ? 'archer' : 'spearman';
-    else if (G.turn > 45) type = r < 0.4 ? 'spearman' : r < 0.7 ? 'archer' : 'warrior';
-    else if (G.turn > 20 && r < 0.25) type = 'archer';
+    const era = Math.max(0, worldEra() - 1);
+    const pool = [['warrior', 'warrior', 'archer'], ['spearman', 'archer', 'warrior'], ['swordsman', 'crossbow', 'spearman'], ['musketman', 'crossbow', 'knight'], ['musketman', 'fieldcannon', 'cavalry'], ['rifleman', 'fieldcannon', 'cavalry']][Math.min(5, era)];
+    const type = G.turn < 20 ? 'warrior' : pick(pool);
     const u = addUnit(type, pid, camp.pos);
     if (u) { u.home = camp.pos; u.guard = u.pos === camp.pos; }
   }
@@ -101,8 +99,16 @@ function barbTurn(pid) {
 }
 
 /* ---------- AI 세력 ---------- */
-const AI_TECH_PRIO = ['pottery', 'mining', 'husbandry', 'writing', 'archery', 'bronze', 'masonry', 'irrigation', 'currency', 'drama', 'engineering',
-  'education', 'iron', 'apprentice', 'riding', 'astronomy', 'machinery', 'theory'];
+const AI_TECH_PRIO = ['pottery', 'mining', 'husbandry', 'writing', 'archery', 'astrology', 'bronze', 'masonry', 'irrigation', 'currency', 'drama', 'theology', 'engineering',
+  'iron', 'riding', 'education', 'guilds', 'apprentice', 'machinery', 'stirrups', 'astronomy', 'printing', 'gunpowder', 'metalcasting', 'theory', 'industrial',
+  'economics', 'milscience', 'rifling', 'electricity', 'radio', 'rocketry'];
+const AI_FOCUS_TECH = {
+  sci: ['writing', 'education', 'astronomy', 'theory', 'electricity', 'rocketry'],
+  rel: ['astrology', 'theology', 'drama'],
+  cul: ['drama', 'masonry', 'printing', 'radio', 'astrology'],
+  mil: ['bronze', 'archery', 'iron', 'machinery', 'stirrups', 'gunpowder', 'milscience', 'rifling'],
+  bal: ['currency', 'engineering', 'guilds'],
+};
 
 function aiBestSite(pid, from) {
   let best = -1, bs = -1e9;
@@ -159,6 +165,25 @@ function aiBuilder(u, p) {
   for (const x of list) { const s = x.w - dist(x.i, u.pos) * 1.2; if (s > bs) { bs = s; best = x; } }
   moveToward(u, best.i, false);
   if (!u.dead && u.pos === best.i && u.mp > 0) improve(u, best.imp);
+}
+
+function aiMissionary(u, p) {
+  const here = spreadTarget(u);
+  if (here && cityReligion(here) !== u.rel) { spreadReligion(u); return; }
+  if (enemiesNear(u.owner, u.pos, 2).some(isMil)) { const c = nearestOwnCity(u.owner, u.pos); if (c && dist(c.pos, u.pos) > 1) { moveToward(u, c.pos, false); return; } }
+  let best = null, bs = 1e9;
+  for (const c of G.cities) {
+    if (cityReligion(c) === u.rel || (c.relP[u.rel] || 0) >= 75) continue;
+    if (c.owner !== u.owner && atWar(u.owner, c.owner)) continue;
+    const s = dist(c.pos, u.pos) - (c.owner === u.owner ? 4 : 0) + (u.id * 7 + c.id * 3) % 4;
+    if (s < bs) { bs = s; best = c; }
+  }
+  if (!best) { if (here) spreadReligion(u); return; }
+  if (dist(u.pos, best.pos) > 1) {
+    const spots = M.nb[best.pos].filter(n => passable(G.tiles[n]) && !UA[n]);
+    if (spots.length) { spots.sort((x, z) => dist(x, u.pos) - dist(z, u.pos)); moveToward(u, spots[0], false); }
+  }
+  if (!u.dead && u.mp > 0) { const c = spreadTarget(u); if (c && cityReligion(c) !== u.rel) spreadReligion(u); }
 }
 
 function aiMilitary(u, p, ctx) {
@@ -266,12 +291,25 @@ function aiChooseProd(c, p, ctx) {
   if (!us.some(u => u.type === 'builder') && !queued('builder') && aiImprovableTiles(pid).length >= 2 && ok('unit:builder') && set(ok('unit:builder'))) return;
   if (ok('building:monument') && set(ok('building:monument'))) return;
   if (mil.length < milWant && income > 0 && rnd() < 0.5) { const m = aiPickMilitary(c, opts, p); if (m && set(m)) return; }
-  if (!(G.difficulty === 'easy' && G.turn < 140) && ok('project:observatory') && set(ok('project:observatory'))) return;
-  for (const d of ['campus', 'commerce', 'industry', 'culture']) {
+  if (!(G.difficulty === 'easy' && G.turn < G.maxTurn * 0.86) && ok('project:space') && set(ok('project:space'))) return;
+  const wantRel = !!p.religion || (religionsFounded() < religionSlots() && (p.focus === 'rel' || p.id % 2 === 1));
+  const dOrder = p.focus === 'rel' ? ['holy', 'campus', 'commerce', 'culture', 'industry'] : p.focus === 'cul' ? ['culture', 'campus', 'holy', 'commerce', 'industry']
+    : p.focus === 'mil' ? ['campus', 'industry', 'commerce', 'holy', 'culture'] : ['campus', 'commerce', 'holy', 'industry', 'culture'];
+  for (const d of dOrder) {
+    if (d === 'holy' && (!wantRel || (p.religion && myCities.filter(x => x.districts.holy != null).length >= 2 && p.focus !== 'rel'))) continue;
     const o = ok('district:' + d);
     if (o) { const sites = districtSites(c, d); if (sites.length && setProduction(c, { kind: 'district', id: d, tile: sites[0].idx })) return; }
   }
-  const order = ['granary', 'library', 'market', 'workshop', 'university', 'theater', 'factory'];
+  // 불가사의: 생산력이 받쳐줄 때, 한 번에 하나만
+  if (!myCities.some(x => x.prodItem && x.prodItem.kind === 'wonder') && (p.focus === 'cul' || rnd() < 0.3)) {
+    const y = cityYields(c);
+    const ws = opts.filter(o => o.kind === 'wonder' && !o.lock && o.cost / Math.max(1, y.p) < 26).sort((x, z) => x.cost - z.cost);
+    if (ws.length) { const sites = wonderSites(c, ws[0].id); if (sites.length && setProduction(c, { kind: 'wonder', id: ws[0].id, tile: sites[0].idx })) return; }
+  }
+  const tight = c.pop >= cityHousing(c) - 1;
+  const order = ['granary', 'shrine', 'library', 'market', 'temple', 'workshop', 'university', 'theater', 'bank', 'museum', 'factory', 'lab', 'stock', 'broadcast'];
+  if (tight) order.unshift('aqueduct', 'sewer');
+  if (p.focus === 'cul') order.unshift('theater', 'museum', 'broadcast');
   if (threat || atWarNow) order.unshift('walls'); else order.push('walls');
   for (const b of order) { const o = ok('building:' + b); if (o && set(o)) return; }
   if (mil.length < milWant + 1 && income > 1) { const m = aiPickMilitary(c, opts, p); if (m && set(m)) return; }
@@ -285,11 +323,13 @@ function aiTurn(pid) {
     const av = availableTechs(pid);
     if (av.length) {
       let best = av[0], bs = 1e9;
-      for (const id of av) { const s = AI_TECH_PRIO.indexOf(id) + rnd() * 3 - (p.boosted[id] ? 2 : 0); if (s < bs) { bs = s; best = id; } }
+      const fav = AI_FOCUS_TECH[p.focus] || [];
+      for (const id of av) { const s = AI_TECH_PRIO.indexOf(id) + rnd() * 3 - (p.boosted[id] ? 2 : 0) - (fav.indexOf(id) >= 0 ? 7 : 0); if (s < bs) { bs = s; best = id; } }
       p.research = best;
     }
   }
   if (p.policyOpts) choosePolicy(pid, pick(p.policyOpts));
+  if (canFoundReligion(pid)) foundReligion(pid, RELIGION_NAMES[(pid * 3 + G.seed) % RELIGION_NAMES.length >>> 0] || RELIGION_NAMES[pid], pick(Object.keys(BELIEFS)));
   aiDiplomacy(p);
 
   // 전쟁 목표: 가장 가까운 적 도시
@@ -320,11 +360,19 @@ function aiTurn(pid) {
     if (u.dead || u.owner !== pid) continue;
     if (u.type === 'settler') aiSettler(u, p);
     else if (u.type === 'builder') aiBuilder(u, p);
+    else if (u.type === 'missionary') aiMissionary(u, p);
     else if (u.type === 'scout' && !ctx.warTarget) { if (!aiTryAttack(u, false)) exploreStep(u); }
     else aiMilitary(u, p, ctx);
     if (G.over) return;
   }
   for (const c of citiesOf(pid)) if (!c.prodItem) aiChooseProd(c, p, ctx);
+  // 신앙으로 선교사 구매
+  if (p.religion && p.faith >= missionaryCost(pid) && unitsOf(pid).filter(u => u.type === 'missionary').length < (p.focus === 'rel' ? 2 : 1)) {
+    const c = citiesOf(pid).find(x => !missionaryLock(x));
+    if (c && G.cities.some(x => cityReligion(x) !== pid)) buyMissionary(c);
+  }
+  // 구식 유닛 업그레이드
+  if (p.gold > 90) for (const u of unitsOf(pid)) { if (!isMil(u) || G.tiles[u.pos].owner !== pid) continue; const to = upgradeTarget(u); if (to && upgradeCost(u, to) < p.gold - 50) { upgradeUnit(u); break; } }
   // 남는 금으로 구매
   if (p.gold > 120) {
     for (const c of citiesOf(pid)) {

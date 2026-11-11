@@ -19,7 +19,8 @@
       <span id="turnLabel" class="turn"></span>
       <button class="icon-btn" id="btnTech" type="button" title="연구 (T)">🔬<span>연구</span></button>
       <button class="icon-btn" id="btnPolicy" type="button" title="정책">🎭<span>정책</span></button>
-      <button class="icon-btn" id="btnDiplo" type="button" title="외교 · 순위">🤝<span>외교</span></button>
+      <button class="icon-btn" id="btnRel" type="button" title="종교">🙏<span>종교</span></button>
+      <button class="icon-btn" id="btnDiplo" type="button" title="외교 · 승리 현황">🤝<span>외교</span></button>
       <button class="icon-btn" id="btnYield" type="button" title="타일 산출량 표시 (Y)">🔢<span>산출</span></button>
       <button class="icon-btn" id="btnHelp" type="button" title="도움말">❓<span>도움말</span></button>
       <button class="icon-btn" id="btnMenu" type="button" title="메뉴">☰<span>메뉴</span></button>
@@ -30,6 +31,7 @@
   <aside id="advisor" hidden></aside>
   </div>
   <div id="toast" hidden></div>
+  <div id="turnFlash" hidden></div>
 
   <div id="dock" hidden>
     <div class="dock-row">
@@ -48,9 +50,9 @@
 
   <div id="setup">
     <div class="setup-inner">
-      <p class="eyebrow">헥스 타일 4X 전략 · 입문용</p>
+      <p class="eyebrow">헥스 타일 4X 전략</p>
       <h1>테라 헥사</h1>
-      <p class="lede">도시를 세우고, 땅을 개발하고, 연구하고, 이웃 세력보다 먼저 승리하세요. 길잡이가 한 단계씩 알려주니 4X 전략 게임이 처음이어도 괜찮아요.</p>
+      <p class="lede">여덟 세력 가운데 하나를 이끌어 고대부터 현대까지 문명을 키우세요. 과학·문화·종교·정복, 이기는 길은 여러 가지예요. 길잡이가 한 단계씩 알려주니 4X 전략 게임이 처음이어도 괜찮아요.</p>
       <div class="field">
         <div class="label">세력 선택</div>
         <div id="factionList" class="factions"></div>
@@ -58,11 +60,15 @@
       <div class="field row">
         <div>
           <div class="label">상대 세력 수</div>
-          <div class="seg" id="segAI"><button type="button" data-v="1">1</button><button type="button" data-v="2" class="on">2</button><button type="button" data-v="3">3</button></div>
+          <div class="seg" id="segAI"><button type="button" data-v="1">1</button><button type="button" data-v="2" class="on">2</button><button type="button" data-v="3">3</button><button type="button" data-v="4">4</button><button type="button" data-v="5">5</button></div>
         </div>
         <div>
           <div class="label">난이도</div>
           <div class="seg" id="segDiff"><button type="button" data-v="easy" class="on">입문</button><button type="button" data-v="normal">보통</button><button type="button" data-v="hard">어려움</button></div>
+        </div>
+        <div>
+          <div class="label">게임 길이</div>
+          <div class="seg" id="segLen"><button type="button" data-v="quick">빠름</button><button type="button" data-v="standard" class="on">표준</button></div>
         </div>
       </div>
       <p class="hint" id="diffHint"></p>
@@ -76,6 +82,8 @@
 <script src="data.js"></script>
 <script src="engine.js"></script>
 <script src="ai.js"></script>
+<script src="art.js"></script>
+<script src="sfx.js"></script>
 <script src="ui.js"></script>
 </body>
 </html>

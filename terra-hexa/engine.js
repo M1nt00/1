@@ -5,7 +5,7 @@ let G = null;        // 직렬화 가능한 게임 상태
 let M = null;        // 지형 기하 캐시 (저장 안 함)
 let UA = [];         // 타일 → 유닛 캐시
 const NOTES = [];    // 사람 플레이어에게 보여줄 알림
-const HOOK = { fx() {}, changed() {} };
+const HOOK = { fx() {}, changed() {}, move() {}, attack() {}, death() {} };
 
 /* ---------- 난수 ---------- */
 function rnd() {
@@ -72,6 +72,10 @@ function atWar(a, b) {
   return !!G.war[a][b];
 }
 function isMil(u) { return UNITS[u.type].cls !== 'civ'; }
+function fac(pid, id) { return factionOf(pid) === id; }
+function techCost(id) { return Math.max(5, Math.round(TECHS[id].cost * (G.costMul || 1))); }
+function playerEra(pid) { let e = 0; for (const id in G.players[pid].techs) e = Math.max(e, TECHS[id].col); return e; }
+function worldEra() { let e = 0; for (const p of G.players) if (!p.barb && p.alive) e = Math.max(e, playerEra(p.id)); return e; }
 function unitsOf(pid) { return G.units.filter(u => u.owner === pid); }
 function citiesOf(pid) { return G.cities.filter(c => c.owner === pid); }
 function techCount(pid) { return Object.keys(G.players[pid].techs).length; }
@@ -88,9 +92,9 @@ function freshWater(i) {
   }
   return v; // 2 호수(담수), 1 해안, 0 없음
 }
-function note(pid, msg, pos, kind) {
+function note(pid, msg, pos, kind, tag) {
   const p = G.players[pid];
-  if (p && p.human) NOTES.push({ msg, pos: pos == null ? -1 : pos, kind: kind || 'info', turn: G.turn });
+  if (p && p.human) NOTES.push({ msg, pos: pos == null ? -1 : pos, kind: kind || 'info', turn: G.turn, tag: tag || '' });
 }
 function seenByHuman(i) { const h = G.players[0]; return !!(h && h.vis && h.vis[i]); }
 function fx(pos, text, color) { if (seenByHuman(pos)) HOOK.fx(pos, text, color); }
@@ -102,6 +106,7 @@ function tileYield(i, pid) {
   let f = T.f, p = T.p, g = T.g;
   if (t.hill) p += 1;
   if (t.forest) { p += 1; if (pid != null && factionOf(pid) === 'silva') p += 1; }
+  if (T.water && t.t !== 'ocean' && pid != null && factionOf(pid) === 'nord') f += 1;
   if (t.res && resVisible(t, pid)) { const R = RESOURCES[t.res]; f += R.f || 0; p += R.p || 0; g += R.g || 0; }
   if (t.imp) {
     const I = IMPROVEMENTS[t.imp];
@@ -109,6 +114,7 @@ function tileYield(i, pid) {
     const o = t.owner >= 0 ? t.owner : pid;
     if (t.imp === 'farm' && o != null && hasTech(o, 'irrigation')) f += 1;
     if (t.imp === 'mine' && o != null && hasTech(o, 'apprentice')) p += 1;
+    if (t.imp === 'mine' && o != null && factionOf(o) === 'dwar') p += 1;
   }
   return { f, p, g };
 }
@@ -117,7 +123,7 @@ function districtAdj(type, idx, pid) {
   let nd = 0, nf = 0, nm = 0, mines = 0, water = false;
   for (const n of M.nb[idx]) {
     const t = G.tiles[n];
-    if (t.district || t.city != null) nd++;
+    if (t.district || t.city != null || t.wonder) nd++;
     if (t.forest) nf++;
     if (t.t === 'mountain') nm++;
     if (t.imp === 'mine') mines++;
@@ -125,8 +131,9 @@ function districtAdj(type, idx, pid) {
   }
   let b = 1; // 지구 자체의 기본 +1
   if (type === 'campus') b += nm + (nf >> 1) + (factionOf(pid) === 'astel' ? 1 : 0);
+  else if (type === 'holy') b += nm + (nf >> 1) + (factionOf(pid) === 'solari' ? 1 : 0);
   else if (type === 'commerce') b += (water ? 2 : 0) + (nd >> 1);
-  else if (type === 'industry') b += mines + (nd >> 1);
+  else if (type === 'industry') b += mines + (nd >> 1) + (factionOf(pid) === 'dwar' ? 1 : 0);
   else if (type === 'culture') b += nd;
   return b;
 }
@@ -137,26 +144,38 @@ function cityHousing(c) {
   h += Object.keys(c.districts).length;
   if (c.palace) h += 1;
   if (hasPol(c.owner, 'commons')) h += 2;
+  if (fac(c.owner, 'nord') && freshWater(c.pos) > 0) h += 2;
   return h;
 }
 
 function cityYields(c) {
   const pid = c.owner;
-  const y = { f: 0, p: 0, g: 0, s: 0, c: 0 };
+  const y = { f: 0, p: 0, g: 0, s: 0, c: 0, r: 0 };
   const ct = tileYield(c.pos, pid);
   y.f += Math.max(2, ct.f); y.p += Math.max(1, ct.p); y.g += ct.g;
   for (const i of c.worked) { const t = tileYield(i, pid); y.f += t.f; y.p += t.p; y.g += t.g; }
   y.s += c.pop * 0.5; y.c += 1;
   if (c.palace) {
     y.p += 2; y.s += 2; y.c += 1; y.g += 4;
-    if (factionOf(pid) === 'astel') y.s += 1;
+    if (factionOf(pid) === 'astel') y.s += 2;
     if (factionOf(pid) === 'merka') y.g += 4;
   }
-  for (const b in c.buildings) { const B = BUILDINGS[b]; y.f += B.f || 0; y.p += B.p || 0; y.g += B.g || 0; y.s += B.s || 0; y.c += B.c || 0; }
+  const rel = G.players[pid].religion, myFaith = cityReligion(c) === pid;
+  for (const b in c.buildings) {
+    const B = BUILDINGS[b]; y.f += B.f || 0; y.p += B.p || 0; y.g += B.g || 0; y.s += B.s || 0; y.c += B.c || 0; y.r += B.r || 0;
+    if (B.district === 'culture' && fac(pid, 'bella')) y.c += 1;
+    if (B.district === 'holy' && rel && rel.belief === 'choral') y.c += 2;
+    if (b === 'shrine' && fac(pid, 'solari')) y.r += 1;
+  }
+  for (const w of c.wonders || []) { const W = WONDERS[w]; y.f += W.f || 0; y.p += W.p || 0; y.g += W.g || 0; y.s += W.s || 0; y.c += W.c || 0; y.r += W.r || 0; }
   for (const d in c.districts) {
     y[DISTRICTS[d].yld] += districtAdj(d, c.districts[d], pid);
     if (d === 'campus' && hasTech(pid, 'astronomy')) y.s += 2;
+    if (d === 'holy' && rel && rel.belief === 'scripture') y.s += 2;
   }
+  if (hasTech(pid, 'theory')) y.s += 2;
+  if (rel && myFaith && rel.belief === 'feast') y.f += 2;
+  if (hasPol(pid, 'piety')) y.r += 1;
   if (hasPol(pid, 'agrarian')) y.f += 1;
   if (hasPol(pid, 'planner')) y.p += 1;
   if (hasPol(pid, 'patron')) y.s += 1;
@@ -175,7 +194,7 @@ function growthNeed(pop) { return Math.round(8 + 5 * (pop - 1) + Math.pow(pop - 
 
 function assignWorkers(c) {
   const pid = c.owner;
-  const cand = c.tiles.filter(i => i !== c.pos && !G.tiles[i].district && G.tiles[i].t !== 'mountain' && dist(i, c.pos) <= 3)
+  const cand = c.tiles.filter(i => i !== c.pos && !G.tiles[i].district && !G.tiles[i].wonder && G.tiles[i].t !== 'mountain' && dist(i, c.pos) <= 3)
     .map(i => ({ i, y: tileYield(i, pid) }));
   c.worked = [];
   let food = Math.max(2, tileYield(c.pos, pid).f);
@@ -232,13 +251,15 @@ function addUnit(type, owner, pos) {
   if (at < 0) return null;
   const U = UNITS[type];
   const u = { id: G.nextId++, type, owner, pos: at, hp: 100, mp: U.move, fort: 0, idle: true, goto: null, sleep: false, skip: false, auto: false };
-  if (U.charges) u.charges = U.charges + (hasPol(owner, 'craft') ? 1 : 0);
+  if (U.charges) u.charges = U.charges + (type === 'builder' && hasPol(owner, 'craft') ? 1 : 0);
+  if (type === 'missionary') { u.rel = owner; u.charges += (fac(owner, 'solari') ? 1 : 0) + (G.wonders.glassspire && G.wonders.glassspire.pid === owner ? 1 : 0); }
   G.units.push(u); UA[at] = u;
   return u;
 }
 function killUnit(u) {
   if (u.dead) return;
   u.dead = true;
+  HOOK.death(u);
   if (UA[u.pos] === u) UA[u.pos] = null;
   const k = G.units.indexOf(u);
   if (k >= 0) G.units.splice(k, 1);
@@ -254,6 +275,8 @@ function unitStr(u, o) {
   if (G.players[pid].barb) { if (G.difficulty === 'easy') s -= 4; }
   else {
     if (factionOf(pid) === 'kardun' && (U.cls === 'melee' || U.cls === 'cav')) s += 3;
+    if (o.defending && fac(pid, 'silva') && G.tiles[u.pos].forest) s += 3;
+    if (o.defending && fac(pid, 'dwar') && G.tiles[u.pos].hill) s += 2;
     if (hasPol(pid, 'elite') && U.cls !== 'civ') s += 2;
     if (hasPol(pid, 'discipline') && o.vs && G.players[o.vs.owner].barb) s += 5;
   }
@@ -278,6 +301,7 @@ function cityStr(c) {
   let s = 14 + c.pop * 1.5 + techCount(c.owner) * 0.7;
   if (c.buildings.walls) s += 8;
   if (hasPol(c.owner, 'bastion')) s += 5;
+  if (G.wonders.giantwall && G.wonders.giantwall.pid === c.owner) s += 6;
   const g = UA[c.pos];
   if (g && g.owner === c.owner && isMil(g)) s += 5;
   return Math.round(s);
@@ -317,10 +341,11 @@ function attack(u, target) {
   if (attackTargets(u).indexOf(target) < 0) return false;
   u.fort = 0; u.idle = false; u.sleep = false; u.goto = null;
   const ranged = !!U.rs;
+  HOOK.attack(u.pos, target, ranged, u.id);
   if (t.city != null) { attackCity(u, G.cities[t.city], ranged); u.mp = 0; HOOK.changed(); return true; }
   const d = UA[target];
   if (!isMil(d)) { // 민간 유닛 포획
-    if (G.players[u.owner].barb) { killUnit(d); note(d.owner, `약탈자가 ${UNITS[d.type].name}을(를) 붙잡아 갔어요!`, target, 'bad'); }
+    if (G.players[u.owner].barb || d.type === 'missionary') { killUnit(d); note(d.owner, `${G.players[u.owner].name}이(가) ${UNITS[d.type].name}을(를) 붙잡아 갔어요!`, target, 'bad'); }
     else {
       note(d.owner, `${UNITS[d.type].name}이(가) 적에게 붙잡혔어요!`, target, 'bad');
       note(u.owner, `적 ${UNITS[d.type].name}을(를) 포획했어요.`, target, 'good');
@@ -339,7 +364,7 @@ function attack(u, target) {
   if (d.hp <= 0 && u.hp <= 0) u.hp = 1; // 동귀어진 방지: 공격자가 살아남음
   if (d.hp <= 0) {
     onKill(u, d); killUnit(d);
-    if (!ranged && u.hp > 0 && G.tiles[target].city == null) { UA[u.pos] = null; u.pos = target; UA[target] = u; onEnter(u, target); }
+    if (!ranged && u.hp > 0 && G.tiles[target].city == null) { const from = u.pos; UA[u.pos] = null; u.pos = target; UA[target] = u; onEnter(u, target); recomputeVis(u.owner); HOOK.move(u, from, target); }
   } else if (u.hp <= 0) { onKill(d, u); killUnit(u); }
   recomputeVis(u.owner);
   HOOK.changed();
@@ -379,6 +404,7 @@ function captureCity(c, u) {
   c.owner = newO;
   for (const i of c.tiles) G.tiles[i].owner = newO;
   c.pop = Math.max(1, c.pop - 1); c.hp = 100; c.prodItem = null; c.progress = {}; c.carry = 0;
+  for (const w of c.wonders || []) G.wonders[w].pid = newO;
   delete c.buildings.walls;
   if (c.palace) {
     c.palace = false;
@@ -472,18 +498,19 @@ function onEnter(u, n) {
     if (r < 0.4) { const g = 25 + ri(4) * 5; p.gold += g; msg = `유적에서 금 ${g}을 찾았어요!`; }
     else if (r < 0.7) {
       const av = availableTechs(u.owner).filter(id => !p.boosted[id]);
-      if (av.length) { const id = pick(av); p.boosted[id] = 1; p.techProg[id] = (p.techProg[id] || 0) + TECHS[id].cost * 0.4; msg = `유적의 기록으로 '${TECHS[id].name}' 연구가 앞당겨졌어요!`; }
+      if (av.length) { const id = pick(av); p.boosted[id] = 1; p.techProg[id] = (p.techProg[id] || 0) + techCost(id) * 0.4; msg = `유적의 기록으로 '${TECHS[id].name}' 연구가 앞당겨졌어요!`; }
       else { p.gold += 30; msg = '유적에서 금 30을 찾았어요!'; }
     } else if (r < 0.85) { for (const i of within(n, 4)) p.explored[i] = 1; msg = '유적의 지도가 주변 지형을 밝혀줬어요!'; }
     else { const c = citiesOf(u.owner)[0]; if (c) { c.pop++; assignWorkers(c); msg = `유적의 사람들이 ${c.name}에 합류했어요! (인구 +1)`; } else { p.gold += 30; msg = '유적에서 금 30을 찾았어요!'; } }
     note(u.owner, msg, n, 'good'); fx(n, '✨', '#ffe9a8');
     p.villages = (p.villages || 0) + 1;
+    boostTech(u.owner, 'astrology');
   }
   if (t.camp && !p.barb && isMil(u)) {
     t.camp = false;
     G.camps = G.camps.filter(c => c.pos !== n);
     p.gold += 40; p.campsDestroyed = (p.campsDestroyed || 0) + 1;
-    note(u.owner, '약탈자 야영지를 파괴했어요! 금 +40', n, 'good'); fx(n, '+40💰', '#ffe9a8');
+    note(u.owner, '약탈자 야영지를 파괴했어요! 금 +40', n, 'good', 'camp'); fx(n, '+40💰', '#ffe9a8');
     boostTech(u.owner, 'bronze');
   }
 }
@@ -491,10 +518,12 @@ function stepUnit(u, n) {
   const t = G.tiles[n];
   if (!passable(t) || UA[n] || (t.city != null && G.cities[t.city].owner !== u.owner)) return false;
   u.mp = Math.max(0, u.mp - moveCost(t));
+  const from = u.pos;
   UA[u.pos] = null; u.pos = n; UA[n] = u;
   u.fort = 0; u.idle = false;
   onEnter(u, n);
   recomputeVis(u.owner);
+  HOOK.move(u, from, n);
   return true;
 }
 /* dest 쪽으로 이번 턴에 갈 수 있는 만큼 이동. 도착 못하면 goto로 기억 */
@@ -517,7 +546,7 @@ function moveToward(u, dest, keepGoto) {
 /* ---------- 도시 ---------- */
 function canFoundAt(i, pid) {
   const t = G.tiles[i];
-  if (!passable(t) || t.camp || t.district || t.city != null) return false;
+  if (!passable(t) || t.camp || t.district || t.wonder || t.city != null) return false;
   if (t.owner >= 0 && t.owner !== pid) return false;
   for (const c of G.cities) if (dist(c.pos, i) <= 3) return false;
   return true;
@@ -540,7 +569,7 @@ function foundCity(u) {
   const c = {
     id: G.cities.length, name: F.cities[n % F.cities.length] + (n >= F.cities.length ? ' ' + (1 + Math.floor(n / F.cities.length)) : ''),
     owner: u.owner, pos: u.pos, pop: 1, food: 0, carry: 0, cult: 0, prodItem: null, progress: {},
-    buildings: {}, districts: {}, tiles: [], worked: [], hp: 200, hit: false, palace: false, origCap: null,
+    buildings: {}, districts: {}, wonders: [], relP: { '-1': 60 }, tiles: [], worked: [], hp: 200, hit: false, palace: false, origCap: null,
   };
   p.cityCount = n + 1;
   if (!p.founded) { p.founded = true; c.palace = true; c.origCap = u.owner; }
@@ -551,7 +580,7 @@ function foundCity(u) {
   killUnit(u);
   assignWorkers(c);
   recomputeVis(c.owner);
-  note(c.owner, `${c.name}을(를) 세웠어요!`, c.pos, 'good');
+  note(c.owner, `${c.name}을(를) 세웠어요!`, c.pos, 'good', 'found');
   if (citiesOf(c.owner).length >= 3) boostTech(c.owner, 'theory');
   HOOK.changed();
   return c;
@@ -593,17 +622,41 @@ function districtSites(c, type) {
   const out = [];
   for (const i of c.tiles) {
     const t = G.tiles[i];
-    if (i === c.pos || t.cid !== c.id || !passable(t) || t.district || t.res || t.camp || dist(i, c.pos) > 3 || UA[i] && UA[i].owner !== c.owner) continue;
+    if (!siteFree(c, i)) continue;
     out.push({ idx: i, bonus: districtAdj(type, i, c.owner) });
   }
   return out.sort((a, b) => b.bonus - a.bonus);
 }
+function siteFree(c, i) {
+  const t = G.tiles[i];
+  if (i === c.pos || t.cid !== c.id || !passable(t) || t.district || t.wonder || t.res || t.camp || dist(i, c.pos) > 3 || (UA[i] && UA[i].owner !== c.owner)) return false;
+  for (const o of G.cities) if (o.prodItem && o.prodItem.tile === i && o !== c) return false;
+  return true;
+}
+function wonderSites(c, id) {
+  const need = WONDERS[id].need, out = [];
+  for (const i of c.tiles) {
+    if (!siteFree(c, i)) continue;
+    if (c.prodItem && c.prodItem.tile === i && c.prodItem.id !== id) continue;
+    const t = G.tiles[i], nb = M.nb[i];
+    let ok = true;
+    if (need === 'mountain') ok = nb.some(n => G.tiles[n].t === 'mountain');
+    else if (need === 'water') ok = nb.some(n => isWater(G.tiles[n]));
+    else if (need === 'flat') ok = !t.hill && !t.forest;
+    else if (need === 'center') ok = nb.indexOf(c.pos) >= 0;
+    else if (need === 'campus' || need === 'holy' || need === 'culture') ok = nb.some(n => G.tiles[n].district === need && G.tiles[n].owner === c.owner);
+    if (ok) out.push({ idx: i, bonus: 0 });
+  }
+  return out;
+}
 function itemCost(c, item) {
   const p = G.players[c.owner];
-  if (item.kind === 'unit') return unitCost(p, item.id);
-  if (item.kind === 'building') return BUILDINGS[item.id].cost;
-  if (item.kind === 'district') return 55 + 15 * Object.keys(c.districts).length;
-  return PROJECTS[item.id].cost;
+  const m = G.costMul || 1;
+  if (item.kind === 'unit') return Math.round(unitCost(p, item.id) * m);
+  if (item.kind === 'building') return Math.round(BUILDINGS[item.id].cost * m);
+  if (item.kind === 'district') return Math.round((55 + 15 * Object.keys(c.districts).length) * m);
+  if (item.kind === 'wonder') return Math.round(WONDERS[item.id].cost * m);
+  return Math.round(PROJECTS[item.id].cost * (item.id === 'wealth' ? 1 : m));
 }
 function itemKey(item) { return item.kind + ':' + item.id; }
 function cityOptions(c) {
@@ -617,6 +670,8 @@ function cityOptions(c) {
     if (U.tech && !p.techs[U.tech]) lock = `연구 필요: ${TECHS[U.tech].name}`;
     else if (U.res && !hasResource(p.id, U.res)) lock = `개발된 ${RESOURCES[U.res].name} 자원 필요`;
     else if (id === 'settler' && c.pop < 2) lock = '인구 2 이상 필요';
+    else if (U.faithOnly) lock = missionaryLock(c) || '신앙으로만 살 수 있어요';
+    if (U.up && !lock) { const nx = UNITS[U.up]; if (p.techs[nx.tech] && (!nx.res || hasResource(p.id, nx.res))) continue; } // 구식 유닛은 목록에서 뺌
     add('unit', id, U, lock);
   }
   for (const id in BUILDINGS) {
@@ -636,10 +691,18 @@ function cityOptions(c) {
     else if (!districtSites(c, id).length) lock = '지을 수 있는 타일이 없어요';
     add('district', id, D, lock);
   }
+  for (const id in WONDERS) {
+    if (G.wonders[id]) continue;
+    const W = WONDERS[id]; let lock = null;
+    if (!p.techs[W.tech]) lock = `연구 필요: ${TECHS[W.tech].name}`;
+    else if (G.cities.some(o => o !== c && o.owner === c.owner && o.prodItem && o.prodItem.kind === 'wonder' && o.prodItem.id === id)) lock = '다른 도시에서 짓고 있어요';
+    else if (!wonderSites(c, id).length) lock = `놓을 자리가 없어요 (${W.needText})`;
+    out.push({ kind: 'wonder', id, key: 'wonder:' + id, name: W.name, icon: W.icon, desc: `${W.desc} · ${W.needText}`, cost: itemCost(c, { kind: 'wonder', id }), lock });
+  }
   { let lock = null;
-    if (!p.techs.theory) lock = '연구 필요: 과학 이론';
-    else if (!c.buildings.university) lock = '대학 필요';
-    add('project', 'observatory', PROJECTS.observatory, lock);
+    if (!p.techs.rocketry) lock = '연구 필요: 로켓 공학';
+    else if (!c.buildings.lab) lock = '연구소 필요';
+    add('project', 'space', PROJECTS.space, lock);
     add('project', 'wealth', PROJECTS.wealth, null); }
   return out;
 }
@@ -648,6 +711,9 @@ function setProduction(c, item) {
   if (!opt || opt.lock) return false;
   if (item.kind === 'district') {
     if (item.tile == null || !districtSites(c, item.id).some(s => s.idx === item.tile)) return false;
+  }
+  if (item.kind === 'wonder') {
+    if (item.tile == null || !wonderSites(c, item.id).some(s => s.idx === item.tile)) return false;
   }
   c.prodItem = { kind: item.kind, id: item.id, tile: item.tile == null ? null : item.tile };
   HOOK.changed();
@@ -659,7 +725,9 @@ function prodMult(c, item) {
   if (item.kind === 'unit') {
     if (item.id === 'settler' && hasPol(pid, 'pioneer')) m += 0.5;
     if (UNITS[item.id].cls !== 'civ' && hasPol(pid, 'conscript')) m += 0.25;
+    if (UNITS[item.id].cls !== 'civ' && fac(pid, 'kardun')) m += 0.15;
   }
+  if (item.kind === 'wonder') m += (hasPol(pid, 'masons') ? 0.2 : 0) + (fac(pid, 'bella') ? 0.15 : 0);
   if (item.kind === 'district' && hasPol(pid, 'planner')) m += 0.25;
   if (!p.human) m *= G.aiMult;
   return m;
@@ -672,6 +740,7 @@ function turnsLeft(c, item, y) {
 }
 function buyCost(c, item) {
   if (item.kind !== 'unit' && item.kind !== 'building') return null;
+  if (item.kind === 'unit' && UNITS[item.id].faithOnly) return null;
   const left = itemCost(c, item) - (c.progress[itemKey(item)] || 0);
   return Math.max(10, Math.ceil(left * 2.2 * (factionOf(c.owner) === 'merka' ? 0.8 : 1)));
 }
@@ -696,11 +765,13 @@ function completeItem(c, item, bought) {
     if (item.id === 'builder') p.buildersBuilt = (p.buildersBuilt || 0) + 1;
     if (bought) u.mp = 0;
     if (unitsOf(pid).filter(x => x.type === 'archer').length >= 2) boostTech(pid, 'machinery');
+    const ub = { horseman: 'stirrups', crossbow: 'gunpowder', catapult: 'metalcasting', knight: 'milscience', musketman: 'rifling' };
+    if (ub[item.id]) boostTech(pid, ub[item.id]);
     note(pid, `${c.name}: ${UNITS[item.id].name} 완성!`, u.pos, 'good');
     recomputeVis(pid);
   } else if (item.kind === 'building') {
     c.buildings[item.id] = 1;
-    const boosts = { monument: 'drama', walls: 'engineering', library: 'education', university: 'astronomy' };
+    const boosts = { monument: 'drama', walls: 'engineering', library: 'education', university: 'astronomy', shrine: 'theology', market: 'guilds', theater: 'printing', bank: 'economics', workshop: 'industrial', factory: 'electricity', museum: 'radio', lab: 'rocketry' };
     if (boosts[item.id]) boostTech(pid, boosts[item.id]);
     note(pid, `${c.name}: ${BUILDINGS[item.id].name} 완성!`, c.pos, 'good');
   } else if (item.kind === 'district') {
@@ -711,10 +782,24 @@ function completeItem(c, item, bought) {
     p.districtsBuilt = (p.districtsBuilt || 0) + 1;
     assignWorkers(c);
     note(pid, `${c.name}: ${DISTRICTS[item.id].name} 완성! (인접 보너스 +${districtAdj(item.id, item.tile, pid)})`, item.tile, 'good');
+  } else if (item.kind === 'wonder') {
+    const t = G.tiles[item.tile];
+    if (G.wonders[item.id] || t.district || t.wonder || t.cid !== c.id || t.owner !== pid) return false;
+    t.wonder = item.id; t.imp = null; t.forest = false;
+    c.wonders.push(item.id);
+    G.wonders[item.id] = { pid, city: c.id, turn: G.turn };
+    assignWorkers(c);
+    for (const q of majors()) note(q.id, q.id === pid ? `🏆 ${c.name}에 불가사의 '${WONDERS[item.id].name}' 완성!` : `${p.name}이(가) 불가사의 '${WONDERS[item.id].name}'을(를) 완성했어요.`, q.id === pid ? item.tile : -1, q.id === pid ? 'good' : 'info', q.id === pid ? 'wonder' : '');
+    for (const o of G.cities) { // 같은 불가사의를 짓던 다른 도시는 금으로 환급
+      if (o === c || !o.prodItem || o.prodItem.kind !== 'wonder' || o.prodItem.id !== item.id) continue;
+      const refund = Math.round((o.progress['wonder:' + item.id] || 0) * 0.6);
+      G.players[o.owner].gold += refund; delete o.progress['wonder:' + item.id]; o.prodItem = null;
+      note(o.owner, `'${WONDERS[item.id].name}'을(를) 다른 세력이 먼저 지었어요. ${o.name}의 진행분은 금 ${refund}으로 돌려받았어요.`, o.pos, 'bad');
+    }
   } else if (item.id === 'wealth') {
     p.gold += 20;
-  } else if (item.id === 'observatory') {
-    note(pid, '대천문대가 완성됐어요!', c.pos, 'good');
+  } else if (item.id === 'space') {
+    note(pid, '우주 탐사선이 발사됐어요!', c.pos, 'good');
     if (!G.over) G.over = { winner: pid, type: 'science' };
   }
   return true;
@@ -748,7 +833,7 @@ function processCity(c) {
         delete c.progress[key];
         c.prodItem = item.id === 'wealth' && !p.human ? null : (item.id === 'wealth' ? item : null);
       } else {
-        if (item.kind === 'district') { delete c.progress[key]; c.prodItem = null; }
+        if (item.kind === 'district' || item.kind === 'wonder') { delete c.progress[key]; c.prodItem = null; }
         else c.progress[key] = cost;
       }
     }
@@ -775,6 +860,7 @@ function cityStrike(c) {
   }
   if (!best) return;
   const d = rollDmg(cityStr(c), unitStr(best, { defending: true }));
+  HOOK.attack(c.pos, best.pos, true, null);
   best.hp -= d; fx(best.pos, '-' + d, '#ff6b5e');
   if (best.hp <= 0) {
     note(c.owner, `${c.name}의 성벽 사격으로 적 ${UNITS[best.type].name}을(를) 처치했어요.`, best.pos, 'good');
@@ -788,7 +874,7 @@ function cityStrike(c) {
 /* ---------- 건설자 ---------- */
 function canImprove(i, imp, pid) {
   const t = G.tiles[i], I = IMPROVEMENTS[imp];
-  if (t.owner !== pid || t.city != null || t.district || !passable(t) || t.imp === imp) return false;
+  if (t.owner !== pid || t.city != null || t.district || t.wonder || !passable(t) || t.imp === imp) return false;
   if (I.tech && !hasTech(pid, I.tech)) return false;
   const res = resVisible(t, pid) ? t.res : null;
   if (t.res && !res) { // 아직 모르는 자원이 있는 타일: 지형 규칙만 적용
@@ -828,7 +914,7 @@ function improve(u, imp) {
 }
 function canChop(u) {
   const t = G.tiles[u.pos];
-  return u.type === 'builder' && u.mp > 0 && t.forest && t.owner === u.owner && !t.district && t.city == null && hasTech(u.owner, 'mining');
+  return u.type === 'builder' && u.mp > 0 && t.forest && t.owner === u.owner && !t.district && !t.wonder && t.city == null && hasTech(u.owner, 'mining');
 }
 function chop(u) {
   if (!canChop(u)) return false;
@@ -851,26 +937,26 @@ function boostTech(pid, id) {
   const p = G.players[pid];
   if (!p || p.barb || p.techs[id] || p.boosted[id]) return;
   p.boosted[id] = 1;
-  p.techProg[id] = (p.techProg[id] || 0) + TECHS[id].cost * 0.4;
-  note(pid, `💡 영감! '${TECHS[id].name}' 연구가 40% 앞당겨졌어요.`, -1, 'good');
+  p.techProg[id] = (p.techProg[id] || 0) + techCost(id) * 0.4;
+  note(pid, `💡 영감! '${TECHS[id].name}' 연구가 40% 앞당겨졌어요.`, -1, 'good', 'boost');
 }
 function addScience(p, amt) {
   if (!p.research) { p.sciBank = Math.min(60, (p.sciBank || 0) + amt); return; }
   const id = p.research;
   p.techProg[id] = (p.techProg[id] || 0) + amt + (p.sciBank || 0);
   p.sciBank = 0;
-  if (p.techProg[id] >= TECHS[id].cost) {
-    p.sciBank = Math.min(60, p.techProg[id] - TECHS[id].cost);
+  if (p.techProg[id] >= techCost(id)) {
+    p.sciBank = Math.min(60, p.techProg[id] - techCost(id));
     p.techs[id] = 1; delete p.techProg[id]; p.research = null;
-    note(p.id, `🔬 연구 완료: ${TECHS[id].name} — ${TECHS[id].unlock}`, -1, 'good');
+    note(p.id, `🔬 연구 완료: ${TECHS[id].name} — ${TECHS[id].unlock}`, -1, 'good', 'tech');
     for (const c of citiesOf(p.id)) assignWorkers(c);
   }
 }
 function researchTurns(p, id, sci) {
-  const left = TECHS[id].cost - (p.techProg[id] || 0) - (p.research === id || !p.research ? (p.sciBank || 0) : 0);
+  const left = techCost(id) - (p.techProg[id] || 0) - (p.research === id || !p.research ? (p.sciBank || 0) : 0);
   return sci > 0 ? Math.max(1, Math.ceil(left / sci)) : 999;
 }
-function policyCost(n) { return 20 + 18 * n + 4 * n * n; }
+function policyCost(n) { return Math.round((20 + 18 * n + 4 * n * n) * (G.costMul || 1)); }
 function addCulture(p, amt) {
   p.cult = (p.cult || 0) + amt;
   const cost = policyCost(p.policies.length);
@@ -902,7 +988,7 @@ function declareWar(a, b) {
   if (atWar(a, b)) return;
   G.war[a][b] = G.war[b][a] = G.turn;
   note(a, `${G.players[b].name}에 전쟁을 선포했어요.`, -1, 'bad');
-  note(b, `⚔️ ${G.players[a].name}이(가) 전쟁을 선포했어요!`, -1, 'bad');
+  note(b, `⚔️ ${G.players[a].name}이(가) 전쟁을 선포했어요!`, -1, 'bad', 'war');
   if (a !== 0 && b !== 0 && G.players[0].met[a] && G.players[0].met[b]) note(0, `${G.players[a].name}이(가) ${G.players[b].name}에 전쟁을 선포했어요.`, -1, 'info');
   HOOK.changed();
 }
@@ -923,14 +1009,16 @@ function aiAcceptsPeace(ai, other) {
 function playerScore(pid) {
   const p = G.players[pid];
   let s = techCount(pid) * 4 + p.policies.length * 3 + (p.kills || 0);
-  for (const c of citiesOf(pid)) s += 8 + c.pop * 3 + Object.keys(c.districts).length * 4 + Object.keys(c.buildings).length * 2;
+  for (const c of citiesOf(pid)) s += 8 + c.pop * 3 + Object.keys(c.districts).length * 4 + Object.keys(c.buildings).length * 2 + (c.wonders || []).length * 10;
+  if (p.religion) s += 10 + G.cities.filter(c => cityReligion(c) === pid).length * 3;
   return s;
 }
 
 /* ---------- 턴 진행 ---------- */
 function playerIncome(pid) {
-  const tot = { g: 0, s: 0, c: 0, upkeep: 0 };
-  for (const c of citiesOf(pid)) { const y = cityYields(c); tot.g += y.g; tot.s += y.s; tot.c += y.c; }
+  const tot = { g: 0, s: 0, c: 0, r: 0, t: playerTourism(pid), upkeep: 0 };
+  for (const c of citiesOf(pid)) { const y = cityYields(c); tot.g += y.g; tot.s += y.s; tot.c += y.c; tot.r += y.r; }
+  const fb = faithBonus(pid); tot.g += fb.g; tot.r += fb.r;
   const mil = unitsOf(pid).filter(isMil).length;
   tot.upkeep = Math.max(0, mil - 2 - (hasPol(pid, 'conscript') ? 2 : 0));
   tot.net = tot.g - tot.upkeep;
@@ -965,8 +1053,12 @@ function beginTurn(pid) {
 function finishTurn(pid) {
   const p = G.players[pid];
   if (p.barb) return;
-  let sci = 0, cult = 0, gold = 0;
-  for (const c of citiesOf(pid)) { const y = processCity(c); sci += y.s; cult += y.c; gold += y.g; if (G.over) break; }
+  let sci = 0, cult = 0, gold = 0, faith = 0;
+  for (const c of citiesOf(pid)) { const y = processCity(c); sci += y.s; cult += y.c; gold += y.g; faith += y.r; if (G.over) break; }
+  const fb = faithBonus(pid); gold += fb.g; faith += fb.r;
+  p.faith = (p.faith || 0) + faith;
+  p.cultLife = (p.cultLife || 0) + cult;
+  p.tourism = (p.tourism || 0) + playerTourism(pid);
   const mil = unitsOf(pid).filter(isMil).length;
   gold -= Math.max(0, mil - 2 - (hasPol(pid, 'conscript') ? 2 : 0));
   p.gold = Math.max(0, p.gold + gold);
@@ -974,6 +1066,156 @@ function finishTurn(pid) {
   addScience(p, sci * (p.human ? 1 : G.sciMult));
   addCulture(p, cult);
   recomputeVis(pid);
+  checkPeacefulVictory(pid);
+}
+
+/* ---------- 종교 ---------- */
+function religionSlots() { return Math.max(2, majors().length - 1); }
+function religionsFounded() { return majors().filter(p => p.religion).length; }
+function foundCost() { return Math.round(36 * (G.costMul || 1)); }
+function cityReligion(c) {
+  let best = null, bv = 0;
+  for (const k in c.relP) if (c.relP[k] > bv) { bv = c.relP[k]; best = +k; }
+  return bv >= 10 && best >= 0 ? best : null; // -1 = 토착 신앙 (아직 종교 없음)
+}
+function canFoundReligion(pid) {
+  const p = G.players[pid];
+  return !p.religion && (p.faith || 0) >= foundCost() && religionsFounded() < religionSlots() && citiesOf(pid).some(c => c.districts.holy != null);
+}
+function addPressure(c, rid, amt, shrink) {
+  if (shrink) for (const k in c.relP) if (+k !== rid) c.relP[k] *= shrink;
+  c.relP[rid] = (c.relP[rid] || 0) + amt;
+  let sum = 0; for (const k in c.relP) sum += c.relP[k];
+  if (sum > 100) for (const k in c.relP) c.relP[k] *= 100 / sum;
+}
+function foundReligion(pid, name, belief) {
+  if (!canFoundReligion(pid) || !BELIEFS[belief]) return false;
+  const p = G.players[pid];
+  const holy = citiesOf(pid).filter(c => c.districts.holy != null).sort((a, b) => (b.palace ? 1 : 0) - (a.palace ? 1 : 0) || b.pop - a.pop)[0];
+  p.faith -= foundCost();
+  p.religion = { name: name || RELIGION_NAMES[pid % RELIGION_NAMES.length], belief, holy: holy.id, turn: G.turn };
+  for (const c of citiesOf(pid)) addPressure(c, pid, c === holy ? 80 : (c.districts.holy != null ? 40 : 20), 0.5);
+  for (const q of majors()) note(q.id, q.id === pid ? `🙏 종교 '${p.religion.name}'을(를) 창시했어요! 성도는 ${holy.name}.` : `${p.name}이(가) 종교 '${p.religion.name}'을(를) 창시했어요.`, q.id === pid ? holy.pos : -1, q.id === pid ? 'good' : 'info', q.id === pid ? 'faith' : '');
+  HOOK.changed();
+  return true;
+}
+/* 믿는 도시가 주변 도시에 조금씩 퍼뜨리는 압력 (라운드마다 한 번) */
+function spreadPressure() {
+  const src = G.cities.map(c => ({ c, r: cityReligion(c) })).filter(x => x.r != null && G.players[x.r].religion);
+  for (const { c, r } of src) {
+    const holy = G.players[r].religion.holy === c.id;
+    const base = (holy ? 1.5 : 0.6) * (c.buildings.temple ? 1.5 : 1);
+    for (const o of G.cities) { const d = dist(c.pos, o.pos); if (d <= 6) addPressure(o, r, base / (1 + d / 2)); }
+  }
+}
+function faithBonus(pid) {
+  const rel = G.players[pid].religion, out = { g: 0, r: 0 };
+  if (!rel) return out;
+  let n = 0; for (const c of G.cities) if (cityReligion(c) === pid) n++;
+  if (rel.belief === 'tithe') out.g = n * 2;
+  if (rel.belief === 'pilgrimage') out.r = n;
+  return out;
+}
+function missionaryCost(pid) { return Math.round((60 + 14 * (G.players[pid].missBought || 0)) * (G.costMul || 1)); }
+function missionaryLock(c) {
+  const p = G.players[c.owner];
+  if (!p.religion) return '종교를 먼저 창시해야 해요';
+  if (c.districts.holy == null) return '성지가 있는 도시에서만 살 수 있어요';
+  if (!c.buildings.shrine) return '성소 필요';
+  return null;
+}
+function buyMissionary(c) {
+  const p = G.players[c.owner], cost = missionaryCost(c.owner);
+  if (missionaryLock(c) || (p.faith || 0) < cost || freeSpot(c.pos) < 0) return null;
+  const u = addUnit('missionary', c.owner, c.pos);
+  if (!u) return null;
+  p.faith -= cost; p.missBought = (p.missBought || 0) + 1; u.mp = 0;
+  note(c.owner, `${c.name}: 선교사가 길을 떠날 준비를 마쳤어요.`, u.pos, 'good');
+  recomputeVis(c.owner); HOOK.changed();
+  return u;
+}
+function spreadTarget(u) {
+  if (u.type !== 'missionary' || u.mp <= 0) return null;
+  let best = null;
+  for (const i of within(u.pos, 1)) { const t = G.tiles[i]; if (t.city != null) { const c = G.cities[t.city]; if ((c.relP[u.rel] || 0) < 75) best = c; } }
+  return best;
+}
+function spreadReligion(u) {
+  const c = spreadTarget(u);
+  if (!c) return false;
+  const before = cityReligion(c);
+  const holyOf = majors().find(q => q.religion && q.religion.holy === c.id && q.id !== u.rel); // 다른 종교의 성도는 잘 넘어가지 않음
+  addPressure(c, u.rel, holyOf ? 14 : 26, holyOf ? 0.9 : 0.8);
+  fx(c.pos, '🙏', '#e9dcff');
+  const now = cityReligion(c), R = G.players[u.rel].religion;
+  if (now === u.rel && before !== u.rel) {
+    note(u.owner, `${c.name}이(가) '${R.name}'을(를) 믿게 됐어요!`, c.pos, 'good', 'faith');
+    if (c.owner !== u.owner) note(c.owner, `${c.name}이(가) ${G.players[u.rel].name}의 종교 '${R.name}'(으)로 개종했어요.`, c.pos, 'info');
+  }
+  u.charges--; u.mp = 0; u.idle = false;
+  if (u.charges <= 0) killUnit(u);
+  checkPeacefulVictory(u.rel);
+  HOOK.changed();
+  return true;
+}
+function religionProgress(pid) {
+  const out = [];
+  for (const q of majors()) {
+    if (!q.alive) continue;
+    const cs = citiesOf(q.id);
+    if (!cs.length) continue;
+    out.push({ pid: q.id, have: cs.filter(c => cityReligion(c) === pid).length, total: cs.length });
+  }
+  return out;
+}
+
+/* ---------- 관광 · 문화 승리 ---------- */
+function cityTourism(c) {
+  let t = 0;
+  for (const b in c.buildings) t += BUILDINGS[b].t || 0;
+  for (const w of c.wonders || []) t += WONDERS[w].t || 0;
+  const rel = G.players[c.owner].religion;
+  if (rel && rel.holy === c.id) t += 2;
+  return t;
+}
+function playerTourism(pid) {
+  let t = 0;
+  for (const c of citiesOf(pid)) t += cityTourism(c);
+  return t * (1 + (hasPol(pid, 'heritage') ? 0.25 : 0) + (fac(pid, 'bella') ? 0.25 : 0));
+}
+/* 상대의 누적 문화를 내 누적 관광이 넘어서야 함 */
+function cultureNeed(qid) { return Math.round((G.players[qid].cultLife || 0) * 0.8 + 250 * (G.costMul || 1)); }
+function checkPeacefulVictory(pid) {
+  if (G.over) return;
+  const p = G.players[pid];
+  if (!p || p.barb || !p.alive) return;
+  if (!p.human && G.difficulty === 'easy') return; // 입문 난이도: AI는 문화·종교 승리를 하지 않음
+  const others = majors().filter(q => q.alive && q.id !== pid);
+  if (!others.length) return;
+  if ((p.tourism || 0) > 0 && others.every(q => p.tourism >= cultureNeed(q.id))) { G.over = { winner: pid, type: 'culture' }; return; }
+  if (p.religion) {
+    const pr = religionProgress(pid);
+    if (pr.length >= 2 && pr.every(x => x.have * 2 > x.total)) G.over = { winner: pid, type: 'religion' };
+  }
+}
+
+/* ---------- 유닛 업그레이드 ---------- */
+function upgradeTarget(u) {
+  const p = G.players[u.owner];
+  let id = UNITS[u.type].up, best = null;
+  while (id) { const U = UNITS[id]; if ((!U.tech || p.techs[U.tech]) && (!U.res || hasResource(u.owner, U.res))) best = id; id = U.up; }
+  return best;
+}
+function upgradeCost(u, to) { return Math.max(20, Math.round((UNITS[to].cost - UNITS[u.type].cost) * 1.5 * (G.costMul || 1)) + 10); }
+function upgradeUnit(u) {
+  const to = upgradeTarget(u), p = G.players[u.owner];
+  if (!to || u.mp <= 0 || G.tiles[u.pos].owner !== u.owner) return false;
+  const cost = upgradeCost(u, to);
+  if (p.gold < cost) return false;
+  p.gold -= cost; u.type = to; u.mp = 0; u.idle = false;
+  fx(u.pos, '⬆', '#ffe9a8');
+  recomputeVis(u.owner); HOOK.changed();
+  return true;
 }
 
 /* 자동 탐험: 가장 가까운 미탐험 경계로 이동 */
@@ -1015,8 +1257,9 @@ function endTurn() {
     finishTurn(i);
   }
   G.cur = 0;
+  if (!G.over) spreadPressure();
   G.turn++;
-  if (!G.over && G.turn > MAX_TURN) {
+  if (!G.over && G.turn > G.maxTurn) {
     const best = majors().filter(p => p.alive).sort((a, b) => playerScore(b.id) - playerScore(a.id))[0];
     G.over = { winner: best.id, type: 'score' };
   }
@@ -1151,14 +1394,15 @@ function genMap(W, H, nMajors) {
 
 function newGame(opts) {
   opts = opts || {};
-  const nAI = Math.max(1, Math.min(3, opts.numAI || 2));
+  const nAI = Math.max(1, Math.min(5, opts.numAI || 2));
   const nMajors = nAI + 1;
-  const size = { 2: [24, 16], 3: [30, 19], 4: [34, 22] }[nMajors];
+  const size = { 2: [24, 16], 3: [30, 19], 4: [34, 22], 5: [38, 24], 6: [42, 26] }[nMajors];
+  const len = GAME_LENGTH[opts.length] || GAME_LENGTH.standard;
   let seed = (opts.seed == null ? (Date.now() & 0x7fffffff) : opts.seed) | 0;
   let gen = null;
   for (let attempt = 0; attempt < 40 && !gen; attempt++) {
-    G = { v: 1, seed, rng: seed + attempt * 7919, W: size[0], H: size[1], turn: 1, cur: 0, tiles: null, units: [], cities: [], players: [], camps: [], nextId: 1, over: null,
-          difficulty: opts.difficulty || 'easy', war: [], peaceTurn: [] };
+    G = { v: 2, seed, rng: seed + attempt * 7919, W: size[0], H: size[1], turn: 1, cur: 0, tiles: null, units: [], cities: [], players: [], camps: [], nextId: 1, over: null,
+          difficulty: opts.difficulty || 'easy', war: [], peaceTurn: [], wonders: {}, maxTurn: len.turns, costMul: len.mul, length: opts.length || 'standard' };
     gen = genMap(size[0], size[1], nMajors);
   }
   if (!gen) throw new Error('지도 생성 실패');
@@ -1170,7 +1414,7 @@ function newGame(opts) {
   for (let i = others.length - 1; i > 0; i--) { const j = ri(i + 1); [others[i], others[j]] = [others[j], others[i]]; }
   const facs = [FACTIONS.find(f => f.id === humanF)].concat(others.slice(0, nAI));
   facs.forEach((F, i) => {
-    G.players.push({ id: i, name: F.name, faction: F.id, color: F.color, dark: F.dark, human: i === 0, alive: true, barb: false,
+    G.players.push({ id: i, name: F.name, leader: F.leader, faction: F.id, color: F.color, dark: F.dark, focus: F.focus, human: i === 0, alive: true, barb: false, faith: 0, religion: null, tourism: 0, cultLife: 0, missBought: 0,
       gold: 10, research: null, techs: {}, techProg: {}, boosted: {}, sciBank: 0, cult: 0, policies: [], policyOpts: null,
       explored: new Array(M.N).fill(0), met: {}, founded: false, cityCount: 0, kills: 0, ai: {} });
   });
@@ -1194,7 +1438,7 @@ function serialize() {
 }
 function deserialize(str) {
   const g = JSON.parse(str);
-  if (!g || g.v !== 1 || !g.tiles) throw new Error('저장 데이터가 올바르지 않아요');
+  if (!g || g.v !== 2 || !g.tiles) throw new Error('저장 데이터가 올바르지 않아요');
   G = g;
   buildGeom(G.W, G.H);
   rebuildUA();
